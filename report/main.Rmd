@@ -1,0 +1,216 @@
+---
+output:
+  pdf_document:
+    # latex_engine: lualatex
+    latex_engine: xelatex
+    number_sections: true
+  html_document:
+    theme: darkly 
+    highlight: tango
+linkcolor: blue
+
+# mainfont: Linux Libertine O
+mainfont: CMU Serif
+# mainfont: EBGaramond08-Regular
+fontsize: 12pt
+# numbersections: true
+numbersections: false
+indent: true
+
+header-includes:
+- \usepackage{indentfirst}
+- \usepackage{graphicx}
+# - \usepackage{emoji}
+- \usepackage{framed}
+- \usepackage{rotating}
+- \usepackage{subcaption}
+- \usepackage{float}
+- \usepackage{tikz}
+- \usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+
+- \definecolor{lightred}{rgb}{1,0.8,0.8}
+- \definecolor{lightgreen}{rgb}{0.8,1,0.8}
+---
+
+# Volume-Adjusted τ-Reset Liquidity Strategy
+
+Данная стратегия является модификацией классической  $\tau$-reset стратегии
+<!-- Тут добавить ссылку на статью ( в рефы ) --> управления ликвидностью в
+Uniswap V3.
+
+## Цель
+
+Адаптировать диапазон ликвидности под рыночную активность, снижая частоту
+выхода за границы диапазона при высокой активности и концентрируя ликвидность
+при низкой.
+
+## Параметры
+
+| Symbol      | Название           | Тип           | Описание                                         |
+| ----------- | ------------------ | ------------- | ------------------------------------------------ |
+| $\tau$      | reset interval     | int (в часах) | Интервал ребалансировки                          |
+| $\delta_0$  | base delta         | float         | Базовая ширина диапазона                         |
+| $k$         | volume sensitivity | float         | Коэффициент чувствительности диапазона к объёму  |
+| $\gamma$    | fee                | float         | Комиссия пула Uniswap V3 (в долях)               |
+| $W_0$       | initial capital    | float         | Начальный капитал в USDC                         |
+| $h$         | volume window      | int           | Длина окна (в часах) для усреднения объёма       |
+
+## Псевдокод
+
+```{=latex}
+\begin{small}
+\begin{algorithm}[H]
+\textbf{Initialization:}\;
+$t_0 \leftarrow \text{initial time}$\;
+$P_0 \leftarrow \text{price}(t_0)$\;
+$\bar{V}_0 \leftarrow \text{initialize\_volume\_window}(h)$\;
+$\delta_0 \leftarrow \text{base delta}$\;
+$W_0 \leftarrow \text{initial capital}$\;
+\text{Compute initial price range:}\;
+$P_{\text{lower}}^{(0)} \leftarrow P_0 \cdot (1 - \delta_0)$\;
+$P_{\text{upper}}^{(0)} \leftarrow P_0 \cdot (1 + \delta_0)$\;
+$L_0 \leftarrow \frac{W_0}{\sqrt{P_{\text{upper}}^{(0)}} - \sqrt{P_{\text{lower}}^{(0)}}}$\;
+\text{Provide liquidity } $L_0$ \text{ in } $[P_{\text{lower}}^{(0)}, P_{\text{upper}}^{(0)}]$\;
+
+\While{\text{strategy is active}}{
+    \text{Wait } $\tau$ \text{ hours}\;
+    $t_k \leftarrow \text{current time}$\;
+    \text{Withdraw } $L_{k-1}$\;
+    
+    \textbf{Step 1: Range Adaptation}\;
+    $V_k \leftarrow \text{volume}(t_k)$\;
+    $\bar{V}_k \leftarrow \frac{1}{h} \sum_{i=k-h}^{k-1} \text{volume}(i)$\;
+    $R_k \leftarrow \frac{V_k}{\bar{V}_k}$\;
+    $\delta_k \leftarrow \delta_0 + k \cdot (R_k - 1)$\;
+    $\delta_k \leftarrow \max(0.01, \min(0.2, \delta_k))$ \;
+    
+    \textbf{Step 2: Update Price Bounds}\;
+    $P_k \leftarrow \text{price}(t_k)$\;
+    $P_{\text{lower}}^{(k)} \leftarrow P_k \cdot (1 - \delta_k)$\;
+    $P_{\text{upper}}^{(k)} \leftarrow P_k \cdot (1 + \delta_k)$\;
+    
+    \textbf{Step 3: Calculate Impermanent Loss}\;
+    $P_{\text{prev}} \leftarrow \text{price}(t_{k-1})$\;
+    $\text{IL} \leftarrow \frac{2\sqrt{P_k/P_{\text{prev}}}}{1 + P_k/P_{\text{prev}}} - 1$\;
+    
+    \textbf{Step 4: Capital Adjustment}\;
+    $W_k \leftarrow W_{k-1} \cdot (1 + \text{IL}) \cdot (1 - \gamma)$\;
+    
+    \textbf{Step 5: Liquidity Redistribution}\;
+    $L_k \leftarrow \frac{W_k}{\sqrt{P_{\text{upper}}^{(k)}} - \sqrt{P_{\text{lower}}^{(k)}}}$\;
+    \text{Provide liquidity } $L_k$ \text{ in } $[P_{\text{lower}}^{(k)}, P_{\text{upper}}^{(k)}]$\;
+    
+    \textbf{State Update:}\;
+    $t_{\text{last reset}} \leftarrow t_k$\;
+}
+\end{algorithm}
+\end{small}
+```
+
+\newpage
+
+## Отличие от классической $\tau$-reset strategy
+
+| Компонент                  | VolumeAdjusted τ-reset              | TauResetStrategy из fractal-defi |
+| -------------------------- | ----------------------------------- | -------------------------------- |
+| Δ (ширина диапазона)       | **динамическая**: зависит от объёма | **фиксированная**                |
+| Основание для адаптации    | Скользящий средний объём            | Нет адаптации                    |
+| IL (имперманентные потери) | Учитываются явно через формулу      | Учитываются косвенно             |
+| Реакция на рынок           | Гибкая, учитывает активность        | Жёстко фиксированная             |
+
+## Ограничения
+
+* Ликвидность считается пропорционально капиталу, упрощая реальные расчёты токенов A и B.
+
+* Все средства всегда реинвестируются при ребалансировке.
+
+* Цена пула извлекается как агрегированная (напр., из Binance или TWAP Uniswap).
+
+* Объём измеряется в USD-эквиваленте и сравнивается по rolling window.
+
+* Нет исполнения частичных выводов или дельта-хеджирования.
+
+# Volume-Volatility Adjusted $\tau$-reset strategy
+
+## Идея:
+
+Адаптируем ширину диапазона $\Delta$ по двум факторам:
+
+- **Объём** ($V$) -- как и раньше;
+
+- **Волатильность** ($\sigma$) -- стандартное отклонение цен за окно.
+
+Ширина диапазона рассчитывается как:
+
+$$
+\delta_t = \delta_0 + k_v \cdot \left(\frac{V_t}{\bar{V}_t} - 1\right) + k_{\sigma} \cdot \left(\frac{\sigma_t}{\bar{\sigma}_t} - 1\right)
+$$
+
+## Псевдокод
+
+```{=latex}
+\begin{small}
+\begin{algorithm}[H]
+\textbf{Initialization:}\;
+$t_0 \leftarrow \text{initial time}$\;
+$P_0 \leftarrow \text{price}(t_0)$\;
+$\bar{V}_0 \leftarrow \text{initialize\_volume\_window}(W)$\;
+$\bar{\sigma}_0 \leftarrow \text{initialize\_volatility\_window}(W)$\;
+$\delta_0 \leftarrow \text{base delta}$\;
+$W_0 \leftarrow \text{initial capital}$\;
+\text{Compute initial range:}\;
+$P_{\text{lower}}^{(0)} \leftarrow P_0(1-\delta_0)$\;
+$P_{\text{upper}}^{(0)} \leftarrow P_0(1+\delta_0)$\;
+$L_0 \leftarrow \frac{W_0}{\sqrt{P_{\text{upper}}^{(0)}} - \sqrt{P_{\text{lower}}^{(0)}}}$\;
+\text{Provide liquidity } $L_0$ \text{ in } $[P_{\text{lower}}^{(0)}, P_{\text{upper}}^{(0)}$\;
+
+\While{\text{strategy active}}{
+    \text{Wait } $\tau$ \text{ hours}\;
+    $t_k \leftarrow \text{current time}$\;
+    \text{Withdraw } $L_{k-1}$\;
+    
+    \textbf{Step 1: Dual-Factor Adaptation}\;
+    $V_k \leftarrow \text{volume}(t_k)$\;
+    $\bar{V}_k \leftarrow \text{mean}(V_{k-W:k})$\;
+    $\sigma_{\text{long}} \leftarrow \text{std}(P_{k-W:k})$\;
+    $\sigma_{\text{short}} \leftarrow \text{std}(P_{k-5:k})$\;
+    
+    $R_{\text{vol}} \leftarrow V_k / \bar{V}_k$\;
+    $R_{\sigma} \leftarrow \sigma_{\text{short}} / \sigma_{\text{long}}$\;
+    
+    $\delta_k \leftarrow \delta_0 + K_V(R_{\text{vol}}-1) + K_{\sigma}(R_{\sigma}-1)$\;
+    $\delta_k \leftarrow \text{clip}(\delta_k, 0.01, 0.2)$\;
+    
+    \textbf{Step 2: Update Price Bounds}\;
+    $P_k \leftarrow \text{price}(t_k)$\;
+    $P_{\text{lower}}^{(k)} \leftarrow P_k(1-\delta_k)$\;
+    $P_{\text{upper}}^{(k)} \leftarrow P_k(1+\delta_k)$\;
+    
+    \textbf{Step 3: Calculate Impermanent Loss}\;
+    \If{$P_{\text{prev}}$ exists}{
+        $\text{IL} \leftarrow \frac{2\sqrt{P_k/P_{\text{prev}}}}{1+P_k/P_{\text{prev}}} - 1$\;
+        $W_k \leftarrow W_{k-1}(1+\text{IL})$\;
+    }
+    
+    \textbf{Step 4: Fee Deduction}\;
+    $W_k \leftarrow W_k(1-\gamma)$\;
+    
+    \textbf{Step 5: Liquidity Redistribution}\;
+    $L_k \leftarrow \frac{W_k}{\sqrt{P_{\text{upper}}^{(k)}} - \sqrt{P_{\text{lower}}^{(k)}}}$\;
+    \text{Provide } $L_k$ \text{ in } $[P_{\text{lower}}^{(k)}, P_{\text{upper}}^{(k)}$\;
+    
+    \textbf{State Update}\;
+    $t_{\text{last reset}} \leftarrow t_k$\;
+    $P_{\text{prev}} \leftarrow P_k$\;
+}
+\end{algorithm}
+\end{small}
+```
+
+\newpage
+
+# References
+
+1. https://arxiv.org/abs/2106.12033
+
+2. https://logarithm-labs.gitbook.io/fractal
