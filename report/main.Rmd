@@ -33,7 +33,7 @@ header-includes:
 ---
 
 \begin{framed}
-\center{\href{https://github.com/markviner/taustra}{Project}}
+\center{\href{https://github.com/markviner/taustrat}{Project}}
 
 \center{Гординский Д.М.}
 \end{framed}
