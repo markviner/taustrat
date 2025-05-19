@@ -1,2 +1,10 @@
 *.swp
 *.log
+tmp
+.env
+notebooks/fractal-data/
+*.csv
+
+fractal-data
+
+*.ipynb_checkpoints
